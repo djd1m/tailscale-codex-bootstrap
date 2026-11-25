@@ -6,6 +6,11 @@ services:
     image: ${TAILSCALE_IMAGE:?Set official tailscale/tailscale image pinned by sha256 digest}
     hostname: ai-egress-amsterdam
     restart: unless-stopped
+    # Docker's embedded DNS must not forward selected app domains back through
+    # the host's MagicDNS and into this same connector.
+    dns:
+      - ${CONNECTOR_DNS_IPV4_PRIMARY:?Set a verified independent upstream DNS IPv4}
+      - ${CONNECTOR_DNS_IPV4_SECONDARY:?Set a second verified independent upstream DNS IPv4}
     pids_limit: 128
     mem_limit: 512m
     cpus: 1.0

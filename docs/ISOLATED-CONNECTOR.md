@@ -36,7 +36,9 @@ sudo install -m 0600 -o root -g root \
 sudoedit /root/ai-egress-amsterdam/connector.env
 ```
 
-В env задайте проверенный `TAILSCALE_IMAGE`, свободный `CONNECTOR_IPV4_SUBNET` и абсолютный `CONNECTOR_STATE_DIR`. При изменении пути заранее создайте именно этот новый root-owned каталог `0700`. Bind mount использует `create_host_path: false`, чтобы опечатка не создавала новый каталог молча. В нём будут секретные ключи новой Tailscale-ноды: каталог `0700`, state-файлы `0600`. Команда запуска задаёт `umask 077`; права существующих файлов проверьте отдельно. Не монтируйте `/var/lib/tailscale`, `/run/tailscale` или иные данные хостового daemon. Резервную копию нового state храните отдельно с теми же ограничениями и не запускайте одновременно два daemon с одной идентичностью.
+В env задайте проверенный `TAILSCALE_IMAGE`, свободный `CONNECTOR_IPV4_SUBNET`, абсолютный `CONNECTOR_STATE_DIR` и два независимых IPv4 DNS upstream: `CONNECTOR_DNS_IPV4_PRIMARY` и `CONNECTOR_DNS_IPV4_SECONDARY`. DNS defaults отсутствуют: администратор явно выбирает доступные из namespace контейнера resolver-адреса. Например, `1.1.1.1` и `9.9.9.9` подходят только после проверки доступности и соответствия требованиям сети. Не используйте MagicDNS `100.100.100.100`, другие tailnet-адреса, loopback или `127.0.0.11` в качестве upstream. Выбранные resolver не должны пересылать app-домены обратно в tailnet или этот connector. При изменении пути state заранее создайте именно этот новый root-owned каталог `0700`. Bind mount использует `create_host_path: false`, чтобы опечатка не создавала новый каталог молча. В нём будут секретные ключи новой Tailscale-ноды: каталог `0700`, state-файлы `0600`. Команда запуска задаёт `umask 077`; права существующих файлов проверьте отдельно. Не монтируйте `/var/lib/tailscale`, `/run/tailscale` или иные данные хостового daemon. Резервную копию нового state храните отдельно с теми же ограничениями и не запускайте одновременно два daemon с одной идентичностью.
+
+Явный `dns` применяется только к connector-контейнеру. Без него Docker может унаследовать host resolver, использующий MagicDNS: после добавления app-домена его DNS-запрос вернётся в тот же App Connector и образует цикл. `--accept-dns=false` у контейнерного Tailscale не исправляет унаследованный Docker upstream. В пользовательском Docker bridge внутри `/etc/resolv.conf` может по-прежнему отображаться embedded DNS `127.0.0.11`; проверяйте заданные upstream через `HostConfig.Dns` и реальный DNS-запрос. Не меняйте host resolver или DNS существующих контейнеров. См. [Docker DNS services](https://docs.docker.com/engine/network/#dns-services).
 
 `TAILSCALE_IMAGE` обязателен и должен иметь вид `tailscale/tailscale@sha256:<64 hex>`. Администратор выбирает реально опубликованный официальный release, проверяет manifest и записывает digest; версия host Tailscale не гарантирует наличие одноимённого Docker tag. Пустое значение останавливает Compose. Не подставляйте плавающие `latest`/`stable` или просто tag вместо digest. Статический `config` проверяет интерполяцию, но не подлинность или формат выбранного image; администратор отдельно проверяет immutable reference до `pull`. `NET_ADMIN` и `NET_RAW` нужны для kernel networking; `privileged` и `SYS_MODULE` отсутствуют. Если TUN или требуемая поддержка kernel недоступны, остановитесь, а не расширяйте привилегии или настройки работающего хоста. См. [Docker configuration Tailscale](https://tailscale.com/docs/features/containers/docker/docker-params) и [официальный образ](https://hub.docker.com/r/tailscale/tailscale).
 
@@ -74,6 +76,39 @@ connector_compose exec connector \
 ```
 
 На новом пустом state ожидается `NeedsLogin`/`Logged out`, а не готовность маршрутов. Запущен непосредственно `tailscaled`; [wrapper containerboot](https://github.com/tailscale/tailscale/blob/v1.104.7/cmd/containerboot/main.go), выполняющий `tailscale up`, обойдён. Поэтому `TS_EXTRA_ARGS` здесь не добавляет тег и роль. Путь state/socket и kernel TUN передаются демону явно; [daemon CLI](https://tailscale.com/docs/reference/tailscaled) описывает эти параметры. Перезапуск после успешного личного входа использует сохранённую идентичность. Сравните маршруты и netfilter с baseline и повторите проверки прежних сервисов **до** регистрации новой ноды.
+
+До включения app-домена проверьте DNS из namespace контейнера. Команды ниже выводят только настроенные DNS-адреса и выполняют прямой запрос к каждому upstream; для этого в image должен быть доступен `nslookup`:
+
+```bash
+connector_check_dns() {
+  local connector_id resolver resolver_list
+  connector_id=$(connector_compose ps --quiet connector) || return 1
+  test -n "$connector_id" || return 1
+  sudo docker inspect --format '{{json .HostConfig.Dns}}' "$connector_id" || return 1
+  resolver_list=$(connector_compose config --format json | python3 -c '
+import json, sys
+print("\n".join(json.load(sys.stdin)["services"]["connector"]["dns"]))
+') || return 1
+  for resolver in $resolver_list; do
+    connector_compose exec -T connector nslookup api.ipify.org "$resolver" || return 1
+  done
+}
+connector_check_dns
+```
+
+Оба upstream должны вернуть актуальные A-адреса. Это проверяет DNS, но не одобрение маршрутов или egress через connector. Если `nslookup` отсутствует, используйте проверенный DNS-инструмент в том же network namespace и явно укажите upstream; не подменяйте проверку запросом через host resolver.
+
+Для исправления DNS уже зарегистрированного connector сначала сохраните его state, node ID и Tailscale IP, остановите pilot-трафик и временно уберите только добавленную app-domain mapping, если она создаёт цикл. Сохраните тот же `CONNECTOR_STATE_DIR`, image и остальные параметры в приватных deployment-файлах; добавьте в них явные DNS upstream и секцию `dns` из актуального шаблона. После `connector_validate_image` пересоздайте только этот сервис:
+
+```bash
+connector_compose up -d --no-deps --force-recreate connector
+connector_compose ps connector
+connector_check_dns
+connector_compose exec connector \
+  tailscale --socket=/run/tailscale/tailscaled.sock status
+```
+
+Подтвердите прежние node ID, tag и Tailscale IP, доступ к control plane и отсутствие DNS timeout/rate-limit в новых логах; затем повторите проверки прежних host-сервисов. State не удаляйте, host daemon и Docker Engine не перезапускайте. Возвращайте только ранее согласованную domain mapping после проверки DNS; route approvals остаются отдельным шагом.
 
 ## Личный вход и отдельное включение роли
 

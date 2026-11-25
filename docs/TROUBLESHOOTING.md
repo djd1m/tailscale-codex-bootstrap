@@ -34,6 +34,86 @@ sudo systemctl is-active tailscaled.service
 
 **Codex есть, но shell его не находит:** wizard работает от root; новая установка обычно `/root/.local/bin/codex`, состояние покажет фактический `installation.codex.path`. Проверяйте `--version` и `--help` по этому пути. Не копируйте root авторизацию другому пользователю. Существующий CLI сохраняется; `package_verified=false` означает, что комплектность полного пакета не подтверждена, даже при рабочем help.
 
+## Вход подтверждён, первая карта сети не приходит
+
+Симптом: браузер подтвердил вход, в локальном журнале есть `machineAuthorized=true; authURL=false`, но `tailscale up` продолжает ждать, а каждые две минуты появляются `map response long-poll timed out!` и `PollNetMap: ... context canceled`. Это уже этап получения карты сети. В [исходниках v1.104.7](https://github.com/tailscale/tailscale/blob/v1.104.7/control/controlclient/direct.go) двухминутный watchdog сам отменяет запрос без ответа; `context canceled` здесь не доказывает отмену входа пользователем. Успешный короткий `whoami` ещё не проверяет поток карты.
+
+Все следующие действия выполняйте **только на настраиваемой VM через её консоль**, сохраняя state и настройки hub. [`Ctrl-C` у ожидающего `tailscale up`](https://github.com/tailscale/tailscale/blob/v1.104.7/cmd/tailscale/cli/up.go) завершает ожидание CLI, daemon продолжает работу. Сначала проверьте альтернативный транспорт без изменения daemon:
+
+```bash
+sudo env TS_FORCE_NOISE_443=true timeout 45s tailscale debug ts2021 --verbose
+```
+
+Если Noise handshake и `whoami` через TCP 443 не проходят, остановитесь на этой ошибке. Если проходят, можно проверить временный обход ниже. `TS_FORCE_NOISE_443` — внутренний диагностический env-knob, проверенный в [v1.104.7](https://github.com/tailscale/tailscale/blob/v1.104.7/control/controlhttp/client.go): он отключает TCP 80 для control connection. Для другой версии проверьте её исходники. Успех не гарантирован и сам по себе не устанавливает причину сбоя.
+
+Создайте собственный runtime drop-in и **один раз** перезапустите daemon. Блок проверяет, что оба пути свободны; не изменяйте эти файлы параллельно с выполнением команд:
+
+```bash
+sudo bash <<'SH'
+set -eu
+runtime=/run/systemd/system/tailscaled.service.d/90-ai-egress-control443.conf
+persistent=/etc/systemd/system/tailscaled.service.d/90-ai-egress-control443.conf
+test ! -e "$runtime"
+test ! -L "$runtime"
+test ! -e "$persistent"
+test ! -L "$persistent"
+install -d /run/systemd/system/tailscaled.service.d
+printf '[Service]\nEnvironment="TS_FORCE_NOISE_443=true"\n' > "$runtime"
+systemctl daemon-reload
+systemctl restart tailscaled
+SH
+```
+
+Если первая регистрация ещё не сохранилась, restart может потребовать обычного входа заново: один раз выполните `sudo tailscale up --accept-routes=false --timeout=60s` и завершите вход в браузере. Не пересылайте URL. Не используйте logout/reset, удаление state или чтение ключей.
+
+```bash
+sudo tailscale status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); print(json.dumps({k:s.get(k) for k in ("BackendState","TailscaleIPs")},indent=2))'
+sudo tailscale ip -4
+```
+
+Требуются `Running` и назначенный Tailscale IP. Повторите проверку **через три минуты**: соединение должно сохраняться дольше 120 секунд, а в локальном журнале не должен повторяться цикл map timeout. Дополнительно проверьте online в админ-консоли или `connectedToControl` через уже доступный API; проверьте связь с нужным peer. При неуспехе сохраните безопасную ошибку и выполните точечный откат ниже, не повторяйте регистрацию по кругу.
+
+Только после такой проверки закрепите **тот же известный файл**: блок сверяет его содержимое, копирует в `/etc`, убирает runtime-копию и перечитывает unit **без второго restart**. До этого runtime-настройка исчезнет при reboot.
+
+```bash
+sudo bash <<'SH'
+set -eu
+runtime=/run/systemd/system/tailscaled.service.d/90-ai-egress-control443.conf
+persistent=/etc/systemd/system/tailscaled.service.d/90-ai-egress-control443.conf
+printf '[Service]\nEnvironment="TS_FORCE_NOISE_443=true"\n' | cmp -s - "$runtime"
+test ! -e "$persistent"
+test ! -L "$persistent"
+install -D -m 0644 "$runtime" "$persistent"
+rm -- "$runtime"
+systemctl daemon-reload
+SH
+```
+
+Откат касается только двух файлов, созданных этим примером. Блок отклоняет символические ссылки, проверяет тип и содержимое существующих файлов. Если обоих файлов уже нет, перезапуска не будет. Не изменяйте их параллельно с откатом; другие drop-in и state он не удаляет:
+
+```bash
+sudo bash <<'SH'
+set -eu
+files=(/run/systemd/system/tailscaled.service.d/90-ai-egress-control443.conf
+       /etc/systemd/system/tailscaled.service.d/90-ai-egress-control443.conf)
+verified=false
+for file in "${files[@]}"; do
+  test ! -L "$file"
+  if test -e "$file"; then
+    test -f "$file"
+    printf '[Service]\nEnvironment="TS_FORCE_NOISE_443=true"\n' | cmp -s - "$file"
+    verified=true
+  fi
+done
+if test "$verified" = false; then
+  exit 0
+fi
+rm -f -- "${files[@]}"
+systemctl daemon-reload
+systemctl restart tailscaled
+SH
+```
+
 ## Tailnet, hub и маршруты
 
 | Блокер / симптом | Что проверить | Следующий шаг |
