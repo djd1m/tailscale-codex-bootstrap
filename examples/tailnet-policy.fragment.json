@@ -1,0 +1,21 @@
+{
+  "tagOwners": {
+    "tag:ai-egress-hub": [],
+    "tag:codex-pilot": []
+  },
+  "nodeAttrs": [{
+    "target": ["*"],
+    "app": {
+      "tailscale.com/app-connectors": [{
+        "name": "codex-amsterdam-pilot",
+        "connectors": ["tag:ai-egress-hub"],
+        "domains": ["probe.example.com"],
+        "routes": ["192.0.2.42/32"]
+      }]
+    }
+  }],
+  "grants": [
+    {"src": ["tag:codex-pilot"], "dst": ["tag:ai-egress-hub"], "ip": ["tcp:53"]},
+    {"src": ["tag:codex-pilot"], "dst": ["192.0.2.42/32"], "ip": ["tcp:443"], "via": ["tag:ai-egress-hub"]}
+  ]
+}

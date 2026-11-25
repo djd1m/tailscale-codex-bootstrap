@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "cloudru-codex-pilot",
+  "hub_ip": "100.64.0.10",
+  "expected_tailnet": "tail000000.ts.net",
+  "connector_tag": "tag:ai-egress-hub",
+  "domains": ["chatgpt.com", "auth.openai.com", "api.openai.com", "api.ipify.org"],
+  "expected_egress_ipv4": "203.0.113.10",
+  "probe_url": "https://api.ipify.org",
+  "probe_domain": "api.ipify.org",
+  "non_ai_probe_url": "https://checkip.amazonaws.com"
+}

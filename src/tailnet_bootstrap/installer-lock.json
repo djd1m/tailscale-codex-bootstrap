@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "reviewed_utc": "2026-11-25",
+  "notes": "Upstream bytes inspected read-only. Changed upstream bytes fail closed until a reviewed lock update. Tailscale package authenticity is verified by apt using this pinned official key. The official Codex installer verifies its release package digests.",
+  "codex": {
+    "url": "https://github.com/openai/codex/releases/download/rust-v0.172.0/install.sh",
+    "version": "0.172.0",
+    "sha256": "b698d8eb50c0fbe0214ea57b5bf2af439054108404c6d2b872989db02f4bd574",
+    "size": 43352,
+    "documentation": "https://github.com/openai/codex",
+    "release_metadata": "https://api.github.com/repos/openai/codex/releases/tags/rust-v0.172.0"
+  },
+  "tailscale": {
+    "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg": {
+      "sha256": "3e03dacf222698c60b8e2f990b809ca1b3e104de127767864284e6c228f1fb39",
+      "size": 2288
+    },
+    "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list": {
+      "sha256": "e95b581a3d0d34614731b867339b48e312c0db16e4b788b736d759f95669e7d9",
+      "size": 156
+    },
+    "https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg": {
+      "sha256": "3e03dacf222698c60b8e2f990b809ca1b3e104de127767864284e6c228f1fb39",
+      "size": 2288
+    },
+    "https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list": {
+      "sha256": "e0acc200aebb45a3d67b4b66524100f8c1f4497866958654798fc4ba09d49f3f",
+      "size": 156
+    },
+    "https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg": {
+      "sha256": "3e03dacf222698c60b8e2f990b809ca1b3e104de127767864284e6c228f1fb39",
+      "size": 2288
+    },
+    "https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list": {
+      "sha256": "963b28f9ca2fe54ad204b16fd70220e071e683984252908ca95480e30d3a15e9",
+      "size": 162
+    },
+    "https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg": {
+      "sha256": "3e03dacf222698c60b8e2f990b809ca1b3e104de127767864284e6c228f1fb39",
+      "size": 2288
+    },
+    "https://pkgs.tailscale.com/stable/debian/trixie.tailscale-keyring.list": {
+      "sha256": "5a1b21b30892bf22fb5d7c4f52fefe9b65efda2100e82abba2e0849da2a2264b",
+      "size": 158
+    }
+  }
+}
