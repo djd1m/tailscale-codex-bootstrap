@@ -1,0 +1,68 @@
+# A separate Tailscale identity. Read README.md before creating this project.
+name: ai-egress-amsterdam
+
+services:
+  connector:
+    image: ${TAILSCALE_IMAGE:?Set official tailscale/tailscale image pinned by sha256 digest}
+    hostname: ai-egress-amsterdam
+    restart: unless-stopped
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_USERSPACE: "false"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SOCKET: /run/tailscale/tailscaled.sock
+    # Bypass containerboot: a fresh daemon must wait for the owner's explicit
+    # browser login, rather than invoking `tailscale up` at container startup.
+    # TS_USERSPACE documents the intended mode; --tun below enforces it because
+    # tailscaled itself does not consume containerboot's TS_* configuration.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        mkdir -p /run/tailscale
+        exec /usr/local/bin/tailscaled \
+          --tun=tailscale0 \
+          --statedir="$${TS_STATE_DIR}" \
+          --state="$${TS_STATE_DIR}/tailscaled.state" \
+          --socket="$${TS_SOCKET}"
+    volumes:
+      - type: bind
+        source: ${CONNECTOR_STATE_DIR:?Set an absolute private state directory outside Git}
+        target: /var/lib/tailscale
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /run/tailscale:mode=0700
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "0"
+      net.ipv6.conf.default.forwarding: "0"
+    networks:
+      - connector
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  connector:
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        # No subnet default: the administrator must first check host, Docker,
+        # LAN, VPN and tailnet routes for conflicts.
+        - subnet: ${CONNECTOR_IPV4_SUBNET:?Choose a verified unused private IPv4 CIDR}

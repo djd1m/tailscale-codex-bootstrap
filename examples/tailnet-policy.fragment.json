@@ -15,7 +15,7 @@
     }
   }],
   "grants": [
-    {"src": ["tag:codex-pilot"], "dst": ["tag:ai-egress-hub"], "ip": ["tcp:53"]},
+    {"src": ["tag:codex-pilot"], "dst": ["tag:ai-egress-hub"], "ip": ["tcp:53", "udp:53"]},
     {"src": ["tag:codex-pilot"], "dst": ["192.0.2.42/32"], "ip": ["tcp:443"], "via": ["tag:ai-egress-hub"]}
   ]
 }
