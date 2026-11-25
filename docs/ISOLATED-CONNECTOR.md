@@ -22,17 +22,47 @@ Owner/Admin/Network admin сначала объединяет узкий пил�
 
 ## Подготовить отдельное состояние
 
-Следующие команды предназначены для администратора на проверенном целевом хосте из корня исходников. Не запускайте клиентский bootstrap на хабе ради создания контейнера. Сначала убедитесь, что Compose project `ai-egress-amsterdam` ещё не занят и каталог state новый; не переиспользуйте чужой state.
+Следующие команды предназначены **только для первой установки** администратором на проверенном целевом хосте из корня доверенной копии исходников. Не запускайте клиентский bootstrap на хабе ради создания контейнера. Сначала убедитесь, что Compose project `ai-egress-amsterdam` ещё не занят. Блок ниже отказывается работать при существующих deployment-каталоге или state, проверяет родительские каталоги и не перезаписывает файлы. При отказе обследуйте найденные данные; не выбирайте другой путь, чтобы обойти проверку действующей установки.
 
 ```bash
-sudo install -d -m 0700 -o root -g root \
-  /root/ai-egress-amsterdam \
-  /opt/tailscale-ai-egress \
-  /opt/tailscale-ai-egress/state
-sudo install -m 0600 -o root -g root \
-  hub/compose.yaml /root/ai-egress-amsterdam/compose.yaml
-sudo install -m 0600 -o root -g root \
-  hub/connector.env.example /root/ai-egress-amsterdam/connector.env
+sudo python3 - "$PWD" <<'PY'
+import os, stat, sys
+from pathlib import Path
+
+os.umask(0o077)
+repo = Path(sys.argv[1])
+deploy = Path('/root/ai-egress-amsterdam')
+state = Path('/opt/tailscale-ai-egress/state')
+sources = [(repo / 'hub/compose.yaml', deploy / 'compose.yaml'),
+           (repo / 'hub/connector.env.example', deploy / 'connector.env')]
+for source, _ in sources:
+    if source.is_symlink() or not source.is_file():
+        sys.exit(f'Остановлено: исходник должен быть обычным файлом: {source}')
+for target in (deploy, state):
+    if os.path.lexists(target):
+        sys.exit(f'Остановлено: путь уже существует, нужен разбор установки: {target}')
+for parent in (Path('/root'), Path('/opt'), state.parent):
+    if os.path.lexists(parent):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            sys.exit(f'Остановлено: небезопасный родительский каталог: {parent}')
+    elif parent != state.parent:
+        sys.exit(f'Остановлено: отсутствует ожидаемый каталог: {parent}')
+if not state.parent.exists():
+    state.parent.mkdir(mode=0o700)
+deploy.mkdir(mode=0o700)
+state.mkdir(mode=0o700)
+for source, target in sources:
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as output:
+        output.write(source.read_bytes())
+print('Новые deployment/state созданы; файлы конфигурации не перезаписывались.')
+PY
+```
+
+Только после успешного выполнения блока отредактируйте новый env:
+
+```bash
 sudoedit /root/ai-egress-amsterdam/connector.env
 ```
 
@@ -63,6 +93,14 @@ print("Official repository and immutable image reference: OK")
 }
 connector_validate_image
 ```
+
+Для **повторного развёртывания или обновления** первичный блок не запускают:
+
+1. Сверьте существующие Compose project, image, node ID, state path и закрытые deployment-файлы. Согласуйте перерыв pilot-трафика; сохраните SSH и контроль действующих приложений хаба.
+2. Остановите только этот connector командой `connector_compose stop connector`, предварительно убедившись, что функция указывает на его действующие файлы. Остальные контейнеры, Docker Engine и host Tailscale продолжают работать.
+3. Пока daemon остановлен, создайте согласованную резервную копию его **фактического** state и deployment-файлов в отдельном root-owned каталоге `0700`, файлы `0600`, вне Git. Проверьте возможность чтения копии и SHA-256; state и env могут содержать секреты, их содержимое в отчёт не выводят.
+4. Сравните новый шаблон с текущими файлами, сохраняя согласованные image, DNS, CIDR и абсолютный state path. Подготовьте проверенную версию конфигурации в **новом** защищённом deployment-каталоге с запретом перезаписи и symlink, затем явно поменяйте пути `--env-file` и `-f` в функции. Существующий state не заменяйте новым и не копируйте в параллельно запускаемый daemon.
+5. Выполните `config`, проверку immutable image, запуск только `connector` и всю приёмку ниже; подтвердите прежние node ID и Tailscale IP. Возврат старого image на текущем state допустим только при заранее проверенной совместимости. Иначе остановите только connector, сохраните неудачный state и отдельно согласуйте восстановление offline-копии. Не запускайте старый daemon на изменённом state без этой проверки.
 
 После проверки baseline и свободного CIDR администратор создаёт только новый сервис:
 
@@ -158,7 +196,35 @@ connector_egress_ipv4() {
 connector_egress_ipv4
 ```
 
-Host curl использует container network namespace, но host resolver-файлы; если host DNS listener недоступен из namespace, сначала решите способ проверяемого DNS, не меняя настройки host resolver. Измерение самого host egress не заменяет проверку контейнера. Полученный адрес занесите в профиль; совпадение адресов ожидается при обычном Docker MASQUERADE, но должно быть измерено.
+Host curl использует container network namespace, но host resolver-файлы. Если host DNS listener недоступен оттуда, используйте следующий отдельный способ. Сначала получите и сверяйте актуальную публичную A-запись **именно `api.ipify.org`** через ранее проверенные независимые DNS из namespace контейнера (`connector_check_dns`). Запишите один подтверждённый адрес в переменную `CONNECTOR_PROBE_IPV4` текущего shell; не используйте адрес из непроверенного сообщения или случайный CDN IP. Функция ниже остановится при пустом, непубличном или не-IPv4 значении:
+
+```bash
+connector_egress_ipv4_verified_a() {
+  local connector_id connector_pid
+  : "${CONNECTOR_PROBE_IPV4:?Задайте проверенную текущую публичную A-запись api.ipify.org}"
+  python3 - "$CONNECTOR_PROBE_IPV4" <<'PY'
+import ipaddress, sys
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    sys.exit('Нужен проверенный публичный IPv4 api.ipify.org')
+if address.version != 4 or not address.is_global or address.is_multicast:
+    sys.exit('Нужен проверенный публичный IPv4 api.ipify.org')
+PY
+  test "$?" -eq 0 || return 1
+  connector_id=$(connector_compose ps --quiet connector) || return 1
+  test -n "$connector_id" || return 1
+  connector_pid=$(sudo docker inspect --format '{{.State.Pid}}' "$connector_id") || return 1
+  test "$connector_pid" -gt 0 || return 1
+  sudo nsenter --target "$connector_pid" --net -- \
+    curl --disable --fail --silent --show-error --ipv4 --noproxy '*' \
+    --proto '=https' --connect-timeout 5 --max-time 15 \
+    --resolve "api.ipify.org:443:$CONNECTOR_PROBE_IPV4" https://api.ipify.org
+}
+connector_egress_ipv4_verified_a
+```
+
+`--resolve` обходит resolver только для этого запроса: hostname URL, SNI и обычная проверка TLS-сертификата остаются `api.ipify.org`; `-k` не используется. Настройки resolver хоста и контейнеров не меняются. Этот запрос измеряет container egress, но сам по себе не проверяет штатный DNS-путь: DNS проверяют отдельно, а после его восстановления повторяют обычный HTTPS без `--resolve`. Измерение самого host egress не заменяет проверку контейнера. Полученный адрес занесите в профиль; совпадение адресов ожидается при обычном Docker MASQUERADE, но должно быть измерено.
 
 С отдельной pilot VM пройдите [матрицу приёмки](ACCEPTANCE.md): текущие A-адреса точного домена через нужный connector, одобренные маршруты и `PrimaryRoutes`, HTTPS echo совпадает с измеренным container egress, независимый non-AI endpoint идёт напрямую с VM. Адреса CDN/DNS меняются: новые префиксы не одобряются автоматически вне согласованного списка. Отдельно требуются собственный Codex login и реальный запрос с наблюдением OAuth/inference/streaming. Для первичного echo-пилота успешный Codex не заявляется.
 

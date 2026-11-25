@@ -14,9 +14,11 @@
 TAILSCALE_IMAGE=tailscale/tailscale@sha256:0000000000000000000000000000000000000000000000000000000000000000 \
 CONNECTOR_STATE_DIR=/opt/tailscale-ai-egress/state \
 CONNECTOR_IPV4_SUBNET=10.255.254.0/28 \
-docker compose --project-name ai-egress-amsterdam -f hub/compose.yaml config --quiet
+CONNECTOR_DNS_IPV4_PRIMARY=1.1.1.1 \
+CONNECTOR_DNS_IPV4_SECONDARY=9.9.9.9 \
+docker compose --env-file /dev/null --project-name ai-egress-amsterdam -f hub/compose.yaml config --quiet
 ```
 
-Нулевой digest и CIDR в этой команде служат только для локального разбора YAML; это не рабочий image и доступность CIDR на целевом хосте не проверена. Для развёртывания задайте проверенный официальный image digest и свой CIDR во внешней копии `connector.env.example`. Пустой image, CIDR или отсутствующий state path останавливают Compose до создания ресурсов. `config` не подтверждает kernel TUN, права, доступность image, маршрут или центральную policy.
+Все значения этой команды предназначены только для локального разбора YAML. Нулевой digest не является рабочим image; доступность CIDR и DNS на целевом хосте не проверена. `--env-file /dev/null` исключает зависимость этой проверки от локального `.env`. Для развёртывания задайте проверенные официальный image digest, свой CIDR и оба DNS во внешней копии `connector.env.example`. Пустые image, CIDR, DNS или отсутствующий state path останавливают Compose до создания ресурсов. `config` не подтверждает kernel TUN, права, доступность image, маршрут или центральную policy.
 
 Запуск, личный вход и включение connector — отдельные действия администратора, приведённые в [инструкции](../docs/ISOLATED-CONNECTOR.md). У контейнера появится **собственный Tailscale IPv4**, который следует записать в клиентский `hub_ip`; IP существующего host daemon для этого профиля не подходит.
